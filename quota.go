@@ -84,11 +84,7 @@ func probeCodex(ctx context.Context, host hostAPI, authIndex string, material au
 	if response.StatusCode != http.StatusOK {
 		return quotaSnapshot{}, fmt.Errorf("Codex 额度接口返回 %d", response.StatusCode)
 	}
-	remaining, resetAt, ok := parseCodexQuota(response.Body, now)
-	if !ok {
-		return quotaSnapshot{}, errors.New("Codex 额度响应缺少可用窗口")
-	}
-	return readyQuota(remaining, resetAt, now), nil
+	return parseCodexQuota(response.Body, now)
 }
 
 func probeAntigravity(ctx context.Context, host hostAPI, authIndex string, material authMaterial, group string, now time.Time) (quotaSnapshot, error) {
@@ -129,40 +125,64 @@ func readyQuota(remaining int, resetAt *time.Time, now time.Time) quotaSnapshot 
 	return quotaSnapshot{Remaining: &remaining, ResetAt: resetAt, ObservedAt: now.UTC(), Status: quotaReady}
 }
 
-func parseCodexQuota(raw []byte, now time.Time) (int, *time.Time, bool) {
+func parseCodexQuota(raw []byte, now time.Time) (quotaSnapshot, error) {
 	var root map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if decoder.Decode(&root) != nil {
-		return 0, nil, false
+		return quotaSnapshot{}, errors.New("Codex 额度响应无效")
 	}
 	rateLimit, _ := root["rate_limit"].(map[string]any)
-	type candidate struct {
-		remaining int
-		resetAt   *time.Time
-	}
-	candidates := []candidate{}
+	windows := map[string]quotaWindow{}
+	// Preserve primary/secondary tie-breaking for the existing reset-soon policy.
+	selected := quotaWindow{Remaining: 101}
 	for _, key := range []string{"primary_window", "secondary_window"} {
-		window, _ := rateLimit[key].(map[string]any)
-		if window == nil {
+		if rateLimit[key] == nil {
 			continue
+		}
+		window, ok := rateLimit[key].(map[string]any)
+		if !ok {
+			return quotaSnapshot{}, fmt.Errorf("Codex %s 窗口格式无效", key)
+		}
+		seconds, _ := toFloat(window["limit_window_seconds"])
+		kind := ""
+		switch seconds {
+		case 5 * 60 * 60:
+			kind = "5h"
+		case 7 * 24 * 60 * 60:
+			kind = "weekly"
+		default:
+			return quotaSnapshot{}, fmt.Errorf("Codex %s 缺少已知窗口时长", key)
+		}
+		if _, exists := windows[kind]; exists {
+			return quotaSnapshot{}, errors.New("Codex 额度窗口时长重复")
+		}
+		if used, exists := window["used_percent"]; exists {
+			value, valid := toFloat(used)
+			if !valid || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
+				return quotaSnapshot{}, errors.New("Codex 已用额度百分比无效")
+			}
 		}
 		remaining, ok := quotaPercent(window)
 		resetAt := quotaResetAt(window, now)
-		if ok && resetAt != nil {
-			candidates = append(candidates, candidate{remaining: remaining, resetAt: resetAt})
+		if !ok || resetAt == nil || remaining < 0 || remaining > 100 {
+			return quotaSnapshot{}, fmt.Errorf("Codex %s 缺少有效额度或重置时间", key)
+		}
+		windows[kind] = quotaWindow{Remaining: remaining, ResetAt: resetAt}
+		if remaining < selected.Remaining {
+			selected = windows[kind]
 		}
 	}
-	if len(candidates) == 0 {
-		return 0, nil, false
+	if len(windows) == 0 {
+		return quotaSnapshot{}, errors.New("Codex 额度响应缺少可用窗口")
 	}
-	selected := candidates[0]
-	for _, candidate := range candidates[1:] {
-		if candidate.remaining < selected.remaining {
-			selected = candidate
-		}
+	// Keep the aggregate for the existing balanced/reset/manual strategies.
+	if reached, _ := toBool(rateLimit["limit_reached"]); reached {
+		selected.Remaining = 0
 	}
-	return selected.remaining, selected.resetAt, true
+	quota := readyQuota(selected.Remaining, selected.ResetAt, now)
+	quota.CodexWindows = windows
+	return quota, nil
 }
 
 func quotaPercent(window map[string]any) (int, bool) {

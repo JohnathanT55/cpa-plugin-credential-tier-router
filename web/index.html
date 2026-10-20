@@ -50,11 +50,22 @@
     <section class="panel strategy-section">
       <div class="section-heading"><div><h2>选择调度方式</h2><p>层级变化主要影响新请求；已有会话可能继续沿用原凭证。</p></div><span class="recommended-pill">推荐：额度分档</span></div>
       <div class="strategy-grid" id="strategyGrid" role="radiogroup" aria-label="调度策略">
-        <button class="strategy-card" type="button" role="radio" data-strategy="quota_bands" aria-checked="true"><span class="radio-mark"></span><strong>额度分档</strong><small>按剩余额度自动分为主用、常规、备用和暂停。</small><span class="strategy-rule">≥50% 主用 · 20%–49% 常规 · 1%–19% 备用</span></button>
+        <button class="strategy-card" type="button" role="radio" data-strategy="quota_bands" aria-checked="true"><span class="radio-mark"></span><strong>额度分档</strong><small>按剩余额度自动分为主用、常规、备用和暂停。</small><span class="strategy-rule" id="quotaBandRule">Codex 分窗口判定，取较低档位</span></button>
         <button class="strategy-card" type="button" role="radio" data-strategy="balanced" aria-checked="false"><span class="radio-mark"></span><strong>均衡轮换</strong><small>所有健康凭证保持同层，由 CPA 轮询分配。</small><span class="strategy-rule">适合额度与稳定性接近的账号</span></button>
         <button class="strategy-card" type="button" role="radio" data-strategy="reset_soon" aria-checked="false"><span class="radio-mark"></span><strong>即将重置优先</strong><small>24 小时内重置且仍有余额的账号优先使用。</small><span class="strategy-rule">先消耗即将刷新的额度</span></button>
         <button class="strategy-card" type="button" role="radio" data-strategy="manual" aria-checked="false"><span class="radio-mark"></span><strong>手动主备</strong><small>为每个账号直接选择主用、常规、备用或暂停。</small><span class="strategy-rule">适合固定主备关系</span></button>
       </div>
+    </section>
+
+    <section class="panel strategy-section" id="codexBandSettings" aria-labelledby="codexBandHeading">
+      <div class="section-heading"><div><h2 id="codexBandHeading">Codex 额度分档阈值</h2><p>分别判断 5 小时和周额度，取较低档位；只有周额度时仅判断周窗口。任一窗口耗尽即暂停。</p></div></div>
+      <div class="advanced-grid">
+        <label class="field"><span>5 小时 · 主用最低剩余 (%)</span><input id="codex5hPrimaryMin" type="number" min="2" max="100" step="1" value="50" required></label>
+        <label class="field"><span>5 小时 · 常规最低剩余 (%)</span><input id="codex5hRegularMin" type="number" min="1" max="99" step="1" value="20" required></label>
+        <label class="field"><span>周额度 · 主用最低剩余 (%)</span><input id="codexWeeklyPrimaryMin" type="number" min="2" max="100" step="1" value="20" required></label>
+        <label class="field"><span>周额度 · 常规最低剩余 (%)</span><input id="codexWeeklyRegularMin" type="number" min="1" max="99" step="1" value="5" required></label>
+      </div>
+      <p class="band-help">低于常规阈值但仍有余额时为备用。每组需满足：1 ≤ 常规阈值 &lt; 主用阈值 ≤ 100。Antigravity 继续使用 50% / 20%。点击预览可试算，保存并应用后生效。</p>
     </section>
 
     <section class="panel accounts-panel">

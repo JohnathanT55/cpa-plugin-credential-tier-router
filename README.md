@@ -7,7 +7,9 @@ The embedded Management Center page uses named policies instead of numeric score
 ## Features
 
 - Four policies: quota bands, balanced rotation, reset-soon first, and manual primary/backup.
-- Quota bands map `>=50%` to Primary, `20–49%` to Regular, `1–19%` to Backup, and `0%` to Paused.
+- Codex quota bands evaluate the 5-hour and weekly windows separately, then use the lower tier. Weekly-only credentials use only the weekly bands.
+- Codex defaults: 5-hour Primary `>=50%`, Regular `>=20%`; weekly Primary `>=20%`, Regular `>=5%`. Positive balances below Regular are Backup; an exhausted window is Paused. All four thresholds are configurable in the page.
+- Antigravity retains its original bands: Primary `>=50%`, Regular `20–49%`, Backup `1–19%`, Paused `0%`.
 - A failed quota probe keeps the last known result until the configured consecutive-failure threshold is reached.
 - Paused credentials use CPA priority `-1` rather than writing `disabled=true`, so a later quota reset can restore them automatically.
 - Credential updates preserve the complete auth document and change only CPA priority.
@@ -44,6 +46,10 @@ plugins:
       provider_scope: codex|antigravity
       antigravity_group: gemini
       failure_threshold: 3
+      codex_5h_primary_min: 50
+      codex_5h_regular_min: 20
+      codex_weekly_primary_min: 20
+      codex_weekly_regular_min: 5
 ```
 
 Start with `auto_apply: false`, open **Credential Tiers** in Management Center, refresh quota, and review the preview before enabling automatic writeback.
@@ -58,6 +64,16 @@ Start with `auto_apply: false`, open **Credential Tiers** in Management Center, 
 | Manual primary/backup | Apply a fixed named tier to each credential. |
 
 The plugin currently manages `codex` and `antigravity` auth files. For Antigravity, the UI can evaluate either the Gemini quota group or the Claude/GPT quota group.
+
+### Codex window-aware quota bands
+
+Window types are identified from `limit_window_seconds` (`18000` for 5 hours, `604800` for a week), not their primary/secondary position or the account's subscription name. For example, 80% remaining in 5 hours and 15% remaining in the week produces Regular; a weekly-only account at 30% produces Primary.
+
+Each threshold pair must satisfy `1 <= regular < primary <= 100`, using integer percentages. Existing settings and state files automatically receive the new defaults. As before, reported percentages are rounded upward to integers. The page shows each window's balance and reset time, plus the reason for the resulting tier. Balanced, reset-soon and manual policies continue to use the aggregate quota behavior.
+
+An unsupported duration, a malformed present window, or disappearance of a previously observed window is a failed probe, not evidence of unlimited quota. Failures retain the last result until the failure threshold, then keep the current tier with an unknown balance. Known window types survive this failure transition and restarts. An account with a valid weekly window and no other window on its first successful probe can be treated as weekly-only; the API cannot prove whether an unobserved window was omitted. After an intentional subscription change removes a previously known window, reset that credential's entry in the plugin's quota cache while CPA is stopped. Legacy aggregate-only cache entries cannot determine the new Codex tiers until a successful window-aware probe.
+
+Preview uses the edited settings without saving them or starting automatic scheduling. **Save and apply** persists the settings and writes the new priorities. Once plugin settings have been saved, the plugin state is authoritative; editing the host YAML alone does not override saved page settings.
 
 ## Build
 

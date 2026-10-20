@@ -25,28 +25,47 @@ const (
 )
 
 type settings struct {
-	AutoApply        bool                `json:"auto_apply"`
-	Strategy         strategyName        `json:"strategy"`
-	IntervalMinutes  int                 `json:"interval_minutes"`
-	Providers        []string            `json:"providers"`
-	AntigravityGroup string              `json:"antigravity_group"`
-	FailureThreshold int                 `json:"failure_threshold"`
-	ManualTiers      map[string]tierName `json:"manual_tiers,omitempty"`
+	AutoApply             bool                `json:"auto_apply"`
+	Strategy              strategyName        `json:"strategy"`
+	IntervalMinutes       int                 `json:"interval_minutes"`
+	Providers             []string            `json:"providers"`
+	AntigravityGroup      string              `json:"antigravity_group"`
+	FailureThreshold      int                 `json:"failure_threshold"`
+	ManualTiers           map[string]tierName `json:"manual_tiers,omitempty"`
+	Codex5hPrimaryMin     int                 `json:"codex_5h_primary_min"`
+	Codex5hRegularMin     int                 `json:"codex_5h_regular_min"`
+	CodexWeeklyPrimaryMin int                 `json:"codex_weekly_primary_min"`
+	CodexWeeklyRegularMin int                 `json:"codex_weekly_regular_min"`
 }
 
 func defaultSettings() settings {
 	return settings{
-		AutoApply:        false,
-		Strategy:         strategyQuota,
-		IntervalMinutes:  15,
-		Providers:        []string{"codex", "antigravity"},
-		AntigravityGroup: "gemini",
-		FailureThreshold: 3,
-		ManualTiers:      map[string]tierName{},
+		AutoApply:             false,
+		Strategy:              strategyQuota,
+		IntervalMinutes:       15,
+		Providers:             []string{"codex", "antigravity"},
+		AntigravityGroup:      "gemini",
+		FailureThreshold:      3,
+		ManualTiers:           map[string]tierName{},
+		Codex5hPrimaryMin:     50,
+		Codex5hRegularMin:     20,
+		CodexWeeklyPrimaryMin: 20,
+		CodexWeeklyRegularMin: 5,
 	}
 }
 
 func (s settings) validate() error {
+	for _, band := range []struct {
+		name             string
+		primary, regular int
+	}{
+		{"codex_5h", s.Codex5hPrimaryMin, s.Codex5hRegularMin},
+		{"codex_weekly", s.CodexWeeklyPrimaryMin, s.CodexWeeklyRegularMin},
+	} {
+		if band.regular < 1 || band.primary <= band.regular || band.primary > 100 {
+			return fmt.Errorf("%s thresholds must satisfy 1 <= regular < primary <= 100", band.name)
+		}
+	}
 	switch s.Strategy {
 	case strategyQuota, strategyRotate, strategyReset, strategyManual:
 	default:
@@ -131,6 +150,20 @@ func parsePluginConfig(raw []byte) (settings, error) {
 	}
 	if value := values["failure_threshold"]; value != "" {
 		cfg.FailureThreshold, _ = strconv.Atoi(value)
+	}
+	for key, target := range map[string]*int{
+		"codex_5h_primary_min":     &cfg.Codex5hPrimaryMin,
+		"codex_5h_regular_min":     &cfg.Codex5hRegularMin,
+		"codex_weekly_primary_min": &cfg.CodexWeeklyPrimaryMin,
+		"codex_weekly_regular_min": &cfg.CodexWeeklyRegularMin,
+	} {
+		if value, exists := values[key]; exists {
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				return settings{}, fmt.Errorf("%s must be an integer", key)
+			}
+			*target = parsed
+		}
 	}
 	return cfg, cfg.validate()
 }

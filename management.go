@@ -60,7 +60,18 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 		}
 		return jsonManagementResponse(http.StatusOK, state), nil
 	case method == http.MethodPost && path == "/preview":
-		result, err := r.run(ctx, false, "手动预览")
+		var draft *settings
+		if len(body) > 0 {
+			next := defaultSettings()
+			if err := json.Unmarshal(body, &next); err != nil {
+				return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": "设置格式无效"}), nil
+			}
+			if err := next.validate(); err != nil {
+				return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": safeError(err)}), nil
+			}
+			draft = &next
+		}
+		result, err := r.runWithSettings(ctx, false, "手动预览", draft)
 		if err != nil {
 			status := http.StatusInternalServerError
 			if strings.Contains(err.Error(), "正在执行") {
@@ -76,7 +87,7 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 		}
 		return jsonManagementResponse(http.StatusOK, result), nil
 	case method == http.MethodPut && path == "/settings":
-		var next settings
+		next := defaultSettings()
 		if err := json.Unmarshal(body, &next); err != nil {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": "设置格式无效"}), nil
 		}

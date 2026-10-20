@@ -254,6 +254,10 @@ func (r *runtime) inspect(ctx context.Context) (plan, error) {
 }
 
 func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, error) {
+	return r.runWithSettings(ctx, apply, trigger, nil)
+}
+
+func (r *runtime) runWithSettings(ctx context.Context, apply bool, trigger string, draft *settings) (plan, error) {
 	if !r.runMu.TryLock() {
 		return plan{}, errors.New("已有一轮探测正在执行")
 	}
@@ -266,6 +270,9 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 	cfg := r.state.Settings
 	cache := cloneQuota(r.state.Quota)
 	r.mu.Unlock()
+	if draft != nil {
+		cfg = *draft
+	}
 	selectedProviders := providerSet(cfg.Providers)
 	now := time.Now().UTC()
 	credentials := make([]credentialState, 0)
@@ -279,6 +286,9 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 		}
 		current := tierFromPriority(file.Priority, file.Disabled)
 		quota, probeErr := probeCredential(ctx, r.host, file, cfg, now)
+		if probeErr == nil && provider == "codex" {
+			probeErr = checkCodexWindowContinuity(cache[file.AuthIndex], quota)
+		}
 		if probeErr != nil {
 			quota = failedQuota(cache[file.AuthIndex], probeErr, cfg.FailureThreshold, now)
 		}
@@ -310,7 +320,12 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 	}
 	r.mu.Lock()
 	r.state.Quota = cache
-	r.latest = result
+	if draft == nil {
+		r.latest = result
+	} else {
+		// A later dashboard read must not pair saved settings with draft tiers.
+		r.latest = plan{}
+	}
 	state := r.state
 	r.mu.Unlock()
 	if err := r.store.save(state); err != nil {
@@ -332,7 +347,57 @@ func failedQuota(previous quotaSnapshot, probeErr error, threshold int, now time
 	if failCount >= threshold {
 		status = quotaUnknown
 	}
-	return quotaSnapshot{ObservedAt: now, Status: status, FailCount: failCount, LastError: message}
+	// Preserve the known window shape even after the cached balance expires.
+	return quotaSnapshot{CodexWindows: previous.CodexWindows, ObservedAt: now, Status: status, FailCount: failCount, LastError: message}
+}
+
+func checkCodexWindowContinuity(previous, next quotaSnapshot) error {
+	for kind := range previous.CodexWindows {
+		if _, exists := next.CodexWindows[kind]; !exists {
+			return fmt.Errorf("Codex 此前存在的 %s 窗口缺失", kind)
+		}
+	}
+	return nil
+}
+
+func quotaBand(remaining, primaryMin, regularMin int) tierName {
+	switch {
+	case remaining <= 0:
+		return tierPaused
+	case remaining >= primaryMin:
+		return tierPrimary
+	case remaining >= regularMin:
+		return tierRegular
+	default:
+		return tierBackup
+	}
+}
+
+func chooseCodexTier(cfg settings, current tierName, quota quotaSnapshot) (tierName, string) {
+	if len(quota.CodexWindows) == 0 {
+		return current, "等待刷新 Codex 分窗口额度，保持原层级"
+	}
+	selected := tierPrimary
+	reasons := []string{}
+	labels := map[tierName]string{tierPrimary: "主用", tierRegular: "常规", tierBackup: "备用", tierPaused: "暂停"}
+	for _, band := range []struct {
+		kind, label      string
+		primary, regular int
+	}{
+		{"5h", "5h", cfg.Codex5hPrimaryMin, cfg.Codex5hRegularMin},
+		{"weekly", "周", cfg.CodexWeeklyPrimaryMin, cfg.CodexWeeklyRegularMin},
+	} {
+		window, exists := quota.CodexWindows[band.kind]
+		if !exists {
+			continue
+		}
+		tier := quotaBand(window.Remaining, band.primary, band.regular)
+		if tier.priority() < selected.priority() {
+			selected = tier
+		}
+		reasons = append(reasons, fmt.Sprintf("%s剩余 %d%%：%s", band.label, window.Remaining, labels[tier]))
+	}
+	return selected, strings.Join(reasons, "；")
 }
 
 func chooseTier(cfg settings, file authFile, current tierName, quota quotaSnapshot, now time.Time) (tierName, string) {
@@ -363,6 +428,9 @@ func chooseTier(cfg settings, file authFile, current tierName, quota quotaSnapsh
 		}
 		return current, "尚未手动调整"
 	default:
+		if providerOf(file) == "codex" {
+			return chooseCodexTier(cfg, current, quota)
+		}
 		switch {
 		case remaining >= 50:
 			return tierPrimary, "剩余额度不少于 50%"

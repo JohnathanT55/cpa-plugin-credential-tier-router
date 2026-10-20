@@ -61,12 +61,18 @@ const (
 )
 
 type quotaSnapshot struct {
-	Remaining  *int        `json:"remaining,omitempty"`
-	ResetAt    *time.Time  `json:"reset_at,omitempty"`
-	ObservedAt time.Time   `json:"observed_at"`
-	Status     quotaStatus `json:"status"`
-	FailCount  int         `json:"fail_count,omitempty"`
-	LastError  string      `json:"last_error,omitempty"`
+	CodexWindows map[string]quotaWindow `json:"codex_windows,omitempty"`
+	Remaining    *int                   `json:"remaining,omitempty"`
+	ResetAt      *time.Time             `json:"reset_at,omitempty"`
+	ObservedAt   time.Time              `json:"observed_at"`
+	Status       quotaStatus            `json:"status"`
+	FailCount    int                    `json:"fail_count,omitempty"`
+	LastError    string                 `json:"last_error,omitempty"`
+}
+
+type quotaWindow struct {
+	Remaining int        `json:"remaining"`
+	ResetAt   *time.Time `json:"reset_at"`
 }
 
 type credentialState struct {
